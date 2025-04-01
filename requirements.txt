@@ -1,0 +1,9 @@
+torch
+torchvision
+transformers
+diffusers
+pillow
+numpy
+pandas
+hpsv2
+ImageReward 
