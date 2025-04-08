@@ -105,35 +105,52 @@ if tokenizer.pad_token is None:
 logger.info(f"Tokenizer pad token ID: {tokenizer.pad_token_id}, EOS token ID: {tokenizer.eos_token_id}")
 
 # Updated tokenization function for 'train_for_ft.jsonl' format
+# Function with added logging
 def format_and_tokenize(examples):
     # 'source' field already contains the full input prompt ending with " Rephrase:"
     full_input_prompts = examples[source_key]
     # 'target' field contains the target output ending with "<|endoftext|>"
     targets_raw = examples[target_key]
 
+    # Ensure inputs are lists for zip
+    if not isinstance(full_input_prompts, list): full_input_prompts = [full_input_prompts]
+    if not isinstance(targets_raw, list): targets_raw = [targets_raw]
+
     # Clean the target: remove "<|endoftext|>" and strip whitespace
     targets_cleaned = [tgt.replace("<|endoftext|>", "").strip() if isinstance(tgt, str) else "" for tgt in targets_raw]
 
+    # Check for empty inputs/targets *before* combining
+    valid_indices = [i for i, (inp, tgt) in enumerate(zip(full_input_prompts, targets_cleaned)) if isinstance(inp, str) and inp and isinstance(tgt, str)] # Ensure not empty strings
+
+    if len(valid_indices) < len(full_input_prompts):
+        logger.warning(f"Found {len(full_input_prompts) - len(valid_indices)} invalid (empty/non-string) source/target pairs in this batch.")
+
+    # Process only valid pairs
+    valid_inputs = [full_input_prompts[i] for i in valid_indices]
+    valid_targets_cleaned = [targets_cleaned[i] for i in valid_indices]
+
+    if not valid_inputs: # Handle case where the entire batch might be invalid
+         logger.error("Entire batch consists of invalid source/target pairs. Returning empty.")
+         # Need to return expected keys with empty lists
+         return {"input_ids": [], "attention_mask": [], "labels": []}
+
+
     # Combine: Use the existing input prompt, append the cleaned target, add tokenizer's EOS
     formatted_texts = [f"{inp}{tgt_clean}{tokenizer.eos_token}"
-                       if isinstance(inp, str) and isinstance(tgt_clean, str) else ""
-                       for inp, tgt_clean in zip(full_input_prompts, targets_cleaned)]
+                       for inp, tgt_clean in zip(valid_inputs, valid_targets_cleaned)]
 
-    # --- Tokenization & Masking (Revised Logic) ---
-
-    # 1. Tokenize the FULL combined text (source + target + eos)
-    # This gives us the final input_ids and attention_mask lengths
+    # --- Tokenization & Masking ---
+    # 1. Tokenize the FULL combined text
     model_inputs = tokenizer(
         formatted_texts,
-        max_length=paper_max_length, # Use max_length from config
+        max_length=paper_max_length,
         truncation=True,
-        padding=False # Padding handled by DataCollator
+        padding=False
     )
 
-    # 2. Tokenize the INPUT part ONLY ('source' field content)
-    # We only need its length to know how much to mask in the labels
+    # 2. Tokenize the INPUT part ONLY
     input_part_tokens = tokenizer(
-        full_input_prompts,
+        valid_inputs, # Tokenize only the valid inputs
         max_length=paper_max_length,
         truncation=True,
         padding=False
@@ -141,37 +158,41 @@ def format_and_tokenize(examples):
 
     # 3. Create labels and mask
     labels = []
-    # Iterate through the results from tokenizing the *full* text
+    mismatches_found = 0
     for i in range(len(model_inputs["input_ids"])):
-        # Get the length of the input part for *this specific example*
-        # Handle potential edge cases where tokenization might differ slightly or fail
         try:
             input_len = len(input_part_tokens["input_ids"][i])
         except IndexError:
-            # If input part tokenization failed for some reason, use 0 length
-            # or log a warning, this depends on how robust you need it
-            logger.warning(f"Could not get input length for example index {i}. Using 0.")
+            logger.warning(f"IndexError getting input length for example index {i} in batch. Using 0.")
             input_len = 0
 
-        # Create the labels list by *copying* the final input_ids for this example
-        # Ensures labels start with the exact same length as input_ids
-        current_labels = list(model_inputs["input_ids"][i])
+        current_input_ids = model_inputs["input_ids"][i]
+        current_labels = list(current_input_ids) # Copy
 
-        # Apply masking: Set the first 'input_len' elements to -100
         for j in range(input_len):
-            if j < len(current_labels): # Boundary check
+            if j < len(current_labels):
                 current_labels[j] = -100
+
+        # *** Detailed Length Check ***
+        if len(current_input_ids) != len(current_labels):
+            logger.error(f"CRITICAL: Length mismatch IN BATCH {i}! Input: {len(current_input_ids)}, Label: {len(current_labels)}")
+            mismatches_found += 1
+            # Option: Skip this example? Or try to fix? For now, just log.
+            # Or potentially force label length to match input_ids length here? Risky.
 
         labels.append(current_labels)
 
-    # Assign the carefully created labels list back to model_inputs
+    if mismatches_found > 0:
+         logger.error(f"Found {mismatches_found} length mismatches in this batch before returning.")
+
     model_inputs["labels"] = labels
 
-    # Sanity check: Ensure lengths match for each example before returning
-    # for idx in range(len(model_inputs["input_ids"])):
-    #     if len(model_inputs["input_ids"][idx]) != len(model_inputs["labels"][idx]):
-    #         logger.error(f"Length mismatch found at index {idx}! Input: {len(model_inputs['input_ids'][idx])}, Label: {len(model_inputs['labels'][idx])}")
-            # You might want to investigate further or skip this example if this happens
+    # *** Final Check Before Return ***
+    if len(model_inputs["input_ids"]) != len(model_inputs["labels"]):
+         logger.error(f"CRITICAL: Overall count mismatch before return! Input IDs: {len(model_inputs['input_ids'])}, Labels: {len(model_inputs['labels'])}")
+
+    # logger.debug(f"Returning keys: {model_inputs.keys()}") # Optional: check keys
+    # logger.debug(f"Lengths: input_ids={len(model_inputs['input_ids'])}, labels={len(model_inputs['labels'])}, attention_mask={len(model_inputs['attention_mask'])}") # Optional: check list lengths
 
     return model_inputs
 
@@ -238,7 +259,12 @@ training_args = TrainingArguments(
 )
 
 # Data collator handles dynamic padding within each batch for efficiency
-data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+# Explicitly tell it to pad labels like input_ids (-100 is default for labels)
+data_collator = DataCollatorForLanguageModeling(
+    tokenizer=tokenizer,
+    mlm=False,
+    # pad_to_multiple_of=8 # Optional: Might improve performance on some hardware
+)
 
 # Initialize Trainer
 trainer = Trainer(
