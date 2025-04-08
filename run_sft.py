@@ -119,16 +119,19 @@ def format_and_tokenize(examples):
                        if isinstance(inp, str) and isinstance(tgt_clean, str) else ""
                        for inp, tgt_clean in zip(full_input_prompts, targets_cleaned)]
 
-    # --- Tokenization & Masking ---
-    # Tokenize the full combined text
+    # --- Tokenization & Masking (Revised Logic) ---
+
+    # 1. Tokenize the FULL combined text (source + target + eos)
+    # This gives us the final input_ids and attention_mask lengths
     model_inputs = tokenizer(
         formatted_texts,
-        max_length=paper_max_length,
+        max_length=paper_max_length, # Use max_length from config
         truncation=True,
         padding=False # Padding handled by DataCollator
     )
 
-    # Tokenize the input part ('source' field content) to determine its length for masking
+    # 2. Tokenize the INPUT part ONLY ('source' field content)
+    # We only need its length to know how much to mask in the labels
     input_part_tokens = tokenizer(
         full_input_prompts,
         max_length=paper_max_length,
@@ -136,24 +139,40 @@ def format_and_tokenize(examples):
         padding=False
     )
 
-    # Create labels: copy input_ids, then mask the input part
+    # 3. Create labels and mask
     labels = []
-    input_ids_list = model_inputs["input_ids"]
-    for i in range(len(input_ids_list)):
-        # Check if tokenization was successful for this example
-        if i < len(input_part_tokens["input_ids"]):
-             input_len = len(input_part_tokens["input_ids"][i])
-        else:
-             input_len = 0 # Handle potential edge case where tokenization failed
+    # Iterate through the results from tokenizing the *full* text
+    for i in range(len(model_inputs["input_ids"])):
+        # Get the length of the input part for *this specific example*
+        # Handle potential edge cases where tokenization might differ slightly or fail
+        try:
+            input_len = len(input_part_tokens["input_ids"][i])
+        except IndexError:
+            # If input part tokenization failed for some reason, use 0 length
+            # or log a warning, this depends on how robust you need it
+            logger.warning(f"Could not get input length for example index {i}. Using 0.")
+            input_len = 0
 
-        label = list(input_ids_list[i]) # Copy current example's input_ids
-        # Mask tokens corresponding to the input prompt (including " Rephrase:")
+        # Create the labels list by *copying* the final input_ids for this example
+        # Ensures labels start with the exact same length as input_ids
+        current_labels = list(model_inputs["input_ids"][i])
+
+        # Apply masking: Set the first 'input_len' elements to -100
         for j in range(input_len):
-            if j < len(label): # Prevent index out of bounds
-                label[j] = -100 # -100 tells the loss function to ignore these tokens
-        labels.append(label)
+            if j < len(current_labels): # Boundary check
+                current_labels[j] = -100
 
+        labels.append(current_labels)
+
+    # Assign the carefully created labels list back to model_inputs
     model_inputs["labels"] = labels
+
+    # Sanity check: Ensure lengths match for each example before returning
+    # for idx in range(len(model_inputs["input_ids"])):
+    #     if len(model_inputs["input_ids"][idx]) != len(model_inputs["labels"][idx]):
+    #         logger.error(f"Length mismatch found at index {idx}! Input: {len(model_inputs['input_ids'][idx])}, Label: {len(model_inputs['labels'][idx])}")
+            # You might want to investigate further or skip this example if this happens
+
     return model_inputs
 
 logger.info("Tokenizing dataset (this might take a while)...")
