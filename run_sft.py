@@ -26,7 +26,7 @@ model_name = "Qwen/Qwen1.5-1.8B-Chat"
 
 # *** YOUR DATA FILE PATH ***
 # Path to the file containing the paired data with 'source' and 'target' keys
-sft_data_file = "path/to/your/train_for_ft.jsonl" # <--- CHANGE THIS PATH
+sft_data_file = "train_for_ft.txt" # <--- CHANGE THIS PATH
 
 # *** KEYS in your JSONL data file ***
 # Based on your file content example from 'train_for_ft.jsonl'
