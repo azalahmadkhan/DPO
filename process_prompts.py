@@ -13,7 +13,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
 # Create output directory
-output_dir = "/home/shawn/DPO/output_images"
+output_dir = "output_images"
 os.makedirs(output_dir, exist_ok=True)
 
 # Load GPT-2 model for generating optimized prompts
@@ -132,14 +132,14 @@ def process_dataset(csv_path):
         })], ignore_index=True)
     
     # Save results
-    chosen_df.to_csv("/home/shawn/DPO/chosen_changed_prompt.csv", index=False)
-    rejected_df.to_csv("/home/shawn/DPO/rejected_changed_prompt.csv", index=False)
+    chosen_df.to_csv("chosen_changed_prompt.csv", index=False)
+    rejected_df.to_csv("rejected_changed_prompt.csv", index=False)
     
     print("\nProcessing complete!")
-    print(f"Chosen prompts saved to: /home/shawn/DPO/chosen_changed_prompt.csv")
-    print(f"Rejected prompts saved to: /home/shawn/DPO/rejected_changed_prompt.csv")
+    print(f"Chosen prompts saved to: chosen_changed_prompt.csv")
+    print(f"Rejected prompts saved to: rejected_changed_prompt.csv")
 
 if __name__ == "__main__":
     # Process testdata.csv as original_prompt.csv
-    input_csv = "/home/shawn/DPO/testdata.csv"
+    input_csv = "testdata.csv"
     process_dataset(input_csv)

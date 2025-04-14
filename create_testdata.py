@@ -5,20 +5,20 @@ import numpy as np
 np.random.seed(42)
 
 # Read original CSV file
-input_file = "/home/shawn/DPO/selected_prompts.csv"
-output_file = "/home/shawn/DPO/testdata.csv"
+input_file = "selected_prompts.csv"
+output_file = "testdata.csv"
 
 try:
     # Read original prompt data
     df = pd.read_csv(input_file)
     
     # Check if data is sufficient
-    if len(df) < 50:
+    if len(df) < 5:
         print(f"Warning: Original data only has {len(df)} rows, less than the requested 50 rows. Will use all available data.")
         sample_df = df
     else:
         # Randomly select 50 prompts
-        sample_df = df.sample(n=50, random_state=42)
+        sample_df = df.sample(n=5, random_state=42)
     
     # Save to testdata.csv
     sample_df.to_csv(output_file, index=False)
