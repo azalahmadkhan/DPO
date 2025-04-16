@@ -14,10 +14,10 @@ try:
     
     # Check if data is sufficient
     if len(df) < 5:
-        print(f"Warning: Original data only has {len(df)} rows, less than the requested 50 rows. Will use all available data.")
+        print(f"Warning: Original data only has {len(df)} rows, less than the requested 5 rows. Will use all available data.")
         sample_df = df
     else:
-        # Randomly select 50 prompts
+        # Randomly select 5 prompts
         sample_df = df.sample(n=5, random_state=42)
     
     # Save to testdata.csv
