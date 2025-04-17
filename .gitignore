@@ -27,6 +27,9 @@ var/
 *.ckpt
 *.safetensors
 ImageReward/
+train_for_ft.txt 
+filtered_mix_train_ft.txt 
+human_preferences-100k.csv
 
 # Generated images
 img/
