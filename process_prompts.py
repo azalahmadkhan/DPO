@@ -57,15 +57,26 @@ def generate_optimized_prompts(original_prompt, num_prompts=2):
     
     return optimized_prompts
 
-# save a few images to make sure the model is generating them at least
-def generate_image(prompt, image_path, which):
+
+def generate_image(prompt, image_path):
     """Generate image using Stable Diffusion"""
     with torch.autocast("cuda" if device.type == "cuda" else "cpu"):
         image = sd_model(prompt, guidance_scale=7.5).images[0]
     
-    if(which < 5):
-        image.save(image_path)
+    image.save(image_path)
     return image
+
+def delete_image(image_path, which):
+    """Delete the image file if it exists."""
+    # this is for space reasons, we don't want to store 50k images
+    # we'll keep the first 5 for confirmation that the model is able to generate images
+    if which > 5:
+        if os.path.exists(image_path):
+            os.remove(image_path)
+            print(f"Deleted: {image_path}")
+        else:
+            print(f"No such file: {image_path}")
+    
 
 def score_image(image, prompt):
     """Score image using ImageReward"""
@@ -117,21 +128,22 @@ def process_dataset(csv_path):
         optimized_prompts = [new_optimized_1, new_optimized_2]
         
         
-        # Generate images for each optimized prompt
+        # generate image and score
         image_paths = []
+        scores = []
         for i, opt_prompt in enumerate(optimized_prompts):
             image_path = os.path.join(output_dir, f"prompt_{idx}_opt_{i}.png")
             print(f"Generating image for optimized prompt {i+1}...")
-            generate_image(opt_prompt, image_path, i)
-            image_paths.append(image_path)
-        
-        # Score images
-        scores = []
-        for i, (opt_prompt, img_path) in enumerate(zip(optimized_prompts, image_paths)):
+            generate_image(opt_prompt, image_path)
             print(f"Scoring image for optimized prompt {i+1}...")
-            score = score_image(img_path, opt_prompt)
+            score = score_image(image_path, original_prompt)
             scores.append(score)
             print(f"Score for optimized prompt {i+1}: {score}")
+            print("Deleting image. Only first 5 are stored for testing")
+            delete_image(image_path, i)
+
+        
+            
         
         # Determine which prompt has higher score
         if scores[0] > scores[1]:
