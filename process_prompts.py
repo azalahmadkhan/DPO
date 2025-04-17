@@ -13,7 +13,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
 # Create output directory
-output_dir = "/home/shawn/DPO/output_images"
+output_dir = "output_images"
 os.makedirs(output_dir, exist_ok=True)
 
 # Load GPT-2 model for generating optimized prompts
@@ -32,10 +32,11 @@ sd_model = StableDiffusionPipeline.from_pretrained(
 print("Loading ImageReward model...")
 # Use the correct model name
 reward_model = RM.load("ImageReward-v1.0").to(device)
+print("\n\n")
 
 def generate_optimized_prompts(original_prompt, num_prompts=2):
     """Generate optimized prompts using GPT-2"""
-    input_text = f"Original prompt: {original_prompt}\nOptimized prompt:"
+    input_text = f"Original prompt: {original_prompt}\nA better prompt:"
     input_ids = tokenizer.encode(input_text, return_tensors="pt").to(device)
     
     optimized_prompts = []
@@ -51,17 +52,19 @@ def generate_optimized_prompts(original_prompt, num_prompts=2):
         )
         
         generated_text = tokenizer.decode(output[0], skip_special_tokens=True)
-        optimized_prompt = generated_text.split("Optimized prompt:")[1].strip()
+        optimized_prompt = generated_text.split("A better prompt:")[1].strip()
         optimized_prompts.append(optimized_prompt)
     
     return optimized_prompts
 
-def generate_image(prompt, image_path):
+# save a few images to make sure the model is generating them at least
+def generate_image(prompt, image_path, which):
     """Generate image using Stable Diffusion"""
     with torch.autocast("cuda" if device.type == "cuda" else "cpu"):
         image = sd_model(prompt, guidance_scale=7.5).images[0]
     
-    image.save(image_path)
+    if(which < 5):
+        image.save(image_path)
     return image
 
 def score_image(image, prompt):
@@ -84,24 +87,42 @@ def process_dataset(csv_path):
     # Create result dataframes
     chosen_df = pd.DataFrame(columns=["original_prompt", "chosen_prompt", "score"])
     rejected_df = pd.DataFrame(columns=["original_prompt", "rejected_prompt", "score"])
+
+    combined_results_list = [] 
     
     # Process each prompt
-    for idx, row in tqdm(df.iterrows(), total=len(df), desc="Processing prompts"):
+    for idx, row in df.iterrows():
         original_prompt = row["prompt"]  # Assume the column name in CSV is "prompt"
         
-        print(f"\nProcessing prompt {idx+1}/{len(df)}: {original_prompt[:50]}...")
+        print(f"\nProcessing prompt {idx+1}/{len(df)}: {original_prompt}")
         
         # Generate two optimized prompts
         optimized_prompts = generate_optimized_prompts(original_prompt)
-        print(f"Optimized prompt 1: {optimized_prompts[0][:50]}...")
-        print(f"Optimized prompt 2: {optimized_prompts[1][:50]}...")
+        print(f"Optimized prompt 1: {optimized_prompts[0]}")
+        new_optimized_1 = ""
+        if(len(optimized_prompts[0]) > 77):
+            new_optimized_1 = optimized_prompts[0][:77]
+        else:
+            new_optimized_1 = optimized_prompts[0]
+        print(f"Truncated version of optimized prompt 1: {new_optimized_1}")
+
+        print(f"Optimized prompt 2: {optimized_prompts[1]}")
+        new_optimized_2 = ""
+        if(len(optimized_prompts[1]) > 77):
+            new_optimized_2 = optimized_prompts[1][:77]
+        else:
+            new_optimized_2 = optimized_prompts[1]
+        print(f"Truncated version of optimized prompt 2: {new_optimized_2}")
+
+        optimized_prompts = [new_optimized_1, new_optimized_2]
+        
         
         # Generate images for each optimized prompt
         image_paths = []
         for i, opt_prompt in enumerate(optimized_prompts):
             image_path = os.path.join(output_dir, f"prompt_{idx}_opt_{i}.png")
             print(f"Generating image for optimized prompt {i+1}...")
-            generate_image(opt_prompt, image_path)
+            generate_image(opt_prompt, image_path, i)
             image_paths.append(image_path)
         
         # Score images
@@ -130,16 +151,31 @@ def process_dataset(csv_path):
             "rejected_prompt": [optimized_prompts[rejected_idx]],
             "score": [scores[rejected_idx]]
         })], ignore_index=True)
+
+
+        row_data = {
+            "prompt": original_prompt,
+            "generated_prompt1": new_optimized_1,
+            "generated_prompt2": new_optimized_2,
+            "prompt1_score": scores[0],
+            "prompt2_score": scores[1]
+        }
+
+        combined_results_list.append(row_data)
     
     # Save results
-    chosen_df.to_csv("/home/shawn/DPO/chosen_changed_prompt.csv", index=False)
-    rejected_df.to_csv("/home/shawn/DPO/rejected_changed_prompt.csv", index=False)
+    chosen_df.to_csv("chosen_changed_prompt.csv", index=False)
+    rejected_df.to_csv("rejected_changed_prompt.csv", index=False)
+
+    combined_results_df = pd.DataFrame(combined_results_list)
+    combined_results_df.to_csv("human_preferences_validation.csv", index=False)
     
     print("\nProcessing complete!")
-    print(f"Chosen prompts saved to: /home/shawn/DPO/chosen_changed_prompt.csv")
-    print(f"Rejected prompts saved to: /home/shawn/DPO/rejected_changed_prompt.csv")
+    print(f"Chosen prompts saved to: chosen_changed_prompt.csv")
+    print(f"Rejected prompts saved to: rejected_changed_prompt.csv")
+    print(f"Combined information has been saved to: human_preferences_validation.csv")
 
 if __name__ == "__main__":
     # Process testdata.csv as original_prompt.csv
-    input_csv = "/home/shawn/DPO/testdata.csv"
+    input_csv = "testdata.csv"
     process_dataset(input_csv)

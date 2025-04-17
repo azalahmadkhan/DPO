@@ -1,9 +1,3 @@
-torch
-torchvision
-transformers
-diffusers
-pillow
-numpy
-pandas
-hpsv2
-ImageReward 
+version https://git-lfs.github.com/spec/v1
+oid sha256:a5aac17d0d09b7354a1d1467687b7b85c3e661f7de646548c3e0650ac4efdd2a
+size 79
