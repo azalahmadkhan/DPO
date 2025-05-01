@@ -2,30 +2,34 @@ import os
 import csv
 import torch
 import hpsv2
-import numpy as np
 from PIL import Image
-from torchvision import transforms
-from transformers import (
-    AutoModelForCausalLM,
-    AutoTokenizer,
-    CLIPProcessor,
-    CLIPModel,
-)
+from transformers import AutoModelForCausalLM, AutoTokenizer, CLIPProcessor, CLIPModel
 from diffusers import StableDiffusionPipeline, DDIMScheduler
+# CHANGES MADE:
+# Class Wrapping::
+# PromptModel: Encapsulates loading (and optional state-dict injection), tokenization, and .generate() logic for any causal‐LM.
+# ImageGenerator: Encapsulates Stable Diffusion setup (pipeline + DDIM scheduler), image‐generation call, file saving, and path management.
+# HPSMetric (and retained CLIPMetric): Wrapped each scoring function into its own class with a compute method.
 
-# OPTIONAL: Future metric imports (as commentedout in the original code)
-# from ImageReward import RM
-# from pickscore import PickScoreModel
-# from aesthetic_predictor import AestheticPredictor
+# State-dict Loading for SFT :: PromptModel.__init__ now accepts a state_dict_path parameter and, if provided (as for "sft"), loads your sft_gpt.bin weights after instantiating the base model
+# Model Registry :: In DiffusionEvaluator._load_models(), all prompt models are now declared in a single dict, keyed by name (“simple”, “sft”, “promptist”,etc),instead of ten separate variables, "simple": no entry lets us treat the base prompt uniformly in the loop
+# Single Evaluation Loop :: The old repeated blocks for each model are replaced by one loop over self.models.items(), calling each model’s .generate_prompt() (skipping “simple”) and then the image generator and HPS scorer—followed by cleaning up the image files.
+# CSV Header & Metrics Dict :: The writer’s header list now shows only the HPS columns, with all other metric columns (CLIP, ImageReward, Aesthetics, PickScore, etc.) left in as commented-out lines. Likewise, the self.metrics dict in the evaluator only contains "hps", with other entries commented out.
+# All original placeholder metric classes and CSV header lines remain in the file, still commented out, so future re‐activation is easy
 
 
 # prompt model
 class PromptModel:
-    def __init__(self, model_name, tokenizer_name, device, local_files=False):
+    def __init__(self, model_name, tokenizer_name, device, local_files=False, state_dict_path=None):
         self.device = device
+        # Load pretrained model
         self.model = AutoModelForCausalLM.from_pretrained(
             model_name, local_files_only=local_files
         ).to(device)
+        # Load custom weights if provided
+        if state_dict_path:
+            self.model.load_state_dict(torch.load(state_dict_path, map_location=device))
+        # Load tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(
             tokenizer_name, local_files_only=local_files
         )
@@ -50,7 +54,6 @@ class PromptModel:
         output_texts = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)
         return output_texts[0].replace(input_text, "").strip()
 
-
 # image generator
 class ImageGenerator:
     def __init__(self, model_id, device, output_folder="img"):
@@ -68,7 +71,6 @@ class ImageGenerator:
         output_path = os.path.join(self.output_folder, filename)
         image.save(output_path)
         return output_path, image
-
 
 # metrics
 class HPSMetric:
@@ -96,8 +98,7 @@ class CLIPMetric:
         features = features / features.norm(dim=-1, keepdim=True)
         return torch.nn.functional.cosine_similarity(features[0], features[1], dim=0).item()
 
-
-# OPTIONAL: Additional metric placeholders (not active)
+# OPTIONAL: Additional metric placeholders (commented out for future use)
 # class ImageRewardMetric:
 #     def __init__(self, device):
 #         self.model = RM.load("ImageReward-v1.0")
@@ -105,17 +106,16 @@ class CLIPMetric:
 #         return self.model.score(prompt, image_path)
 
 # class AestheticsMetric:
-#     def __init__(self):
+#     def __init__(self, device):
 #         self.model = AestheticPredictor("ava-hq")
 #     def compute(self, image_path):
 #         return self.model.predict(image_path)
 
 # class PickScoreMetric:
-#     def __init__(self):
+#     def __init__(self, device):
 #         self.model = PickScoreModel("ybelkada/pickscore_v1")
 #     def compute(self, prompt, image_path):
 #         return self.model.inference(prompt, image_path)
-
 
 # evaluator
 class DiffusionEvaluator:
@@ -127,17 +127,21 @@ class DiffusionEvaluator:
         self.image_generator = ImageGenerator("CompVis/stable-diffusion-v1-4", device)
         self.metrics = {
             "hps": HPSMetric(),
-            "clip": CLIPMetric(device),
-            #optional metrics (optional, because they were commented out in the original code)
-            #"image_reward": ImageRewardMetric(device),
-            #"aesthetics": AestheticsMetric(),
-            #"pickscore": PickScoreMetric(),
+            # "clip": CLIPMetric(device),  # Commented out to disable CLIP metric
+            # "image_reward": ImageRewardMetric(device),
+            # "aesthetics": AestheticsMetric(device),
+            # "pickscore": PickScoreMetric(device),
         }
 
     def _load_models(self):
         return {
-            "sft": PromptModel("gpt2", "gpt2", self.device),
-            "promptist": PromptModel("microsoft/Promptist", "microsoft/Promptist", self.device),
+            "simple": None,  # simple uses the base prompt directly
+            "sft": PromptModel(
+                "gpt2", "gpt2", self.device, state_dict_path="sft_gpt.bin"
+            ),
+            "promptist": PromptModel(
+                "microsoft/Promptist", "microsoft/Promptist", self.device
+            ),
             "bloom": PromptModel(
                 "alibaba-pai/pai-bloom-1b1-text2prompt-sd",
                 "alibaba-pai/pai-bloom-1b1-text2prompt-sd",
@@ -155,35 +159,26 @@ class DiffusionEvaluator:
             return [row["prompt"] for row in csv.DictReader(f)]
 
     def _generate_all_prompts(self, base_prompt):
-        return {
-            "simple": base_prompt,
-            **{name: model.generate_prompt(base_prompt) for name, model in self.models.items()}
-        }
+        prompts = {"simple": base_prompt}
+        for name, model in self.models.items():
+            if name == "simple":
+                continue
+            prompts[name] = model.generate_prompt(base_prompt)
+        return prompts
 
     def _process_single_prompt(self, idx, base_prompt):
         generated_prompts = self._generate_all_prompts(base_prompt)
         image_paths = []
-        metric_data = {"hps": [], "clip": []}  # add keys for optional metrics as needed
+        metric_data = []  # only HPS scores
 
         for model_name, prompt in generated_prompts.items():
             filename = f"{idx}_{model_name}.png"
             img_path, _ = self.image_generator.generate_image(prompt, filename)
             image_paths.append(img_path)
 
-            metric_data["hps"].append(self.metrics["hps"].compute(img_path, prompt))
+            metric_data.append(self.metrics["hps"].compute(img_path, prompt))
 
-            if model_name != "simple":
-                metric_data["clip"].append(
-                    self.metrics["clip"].compute_similarity(base_prompt, prompt)
-                )
-            else:
-                metric_data["clip"].append(1.0)
-
-            #optionally: add to metric_data for each additional metric
-            #metric_data["image_reward"].append(self.metrics["image_reward"].compute(img_path, prompt))
-            #metric_data["aesthetics"].append(self.metrics["aesthetics"].compute(img_path))
-            # etric_data["pickscore"].append(self.metrics["pickscore"].compute(prompt, img_path))
-
+        # clean up images
         for path in image_paths:
             os.remove(path)
 
@@ -193,22 +188,23 @@ class DiffusionEvaluator:
         prompts = self._read_prompts()
         with open(self.diffusion_output, "w", newline="") as f:
             writer = csv.writer(f)
+            # CSV header includes HPS columns; other metrics commented out
             writer.writerow([
                 "hps_simple", "hps_sft", "hps_promptist", "hps_bloom",
                 "hps_dpo", "hps_dpo_10", "hps_dpo_20", "hps_dpo_30", "hps_dpo_50",
-                "clip_simple", "clip_sft", "clip_promptist", "clip_bloom",
-                "clip_dpo", "clip_dpo_10", "clip_dpo_20", "clip_dpo_30", "clip_dpo_50",
-                # "image_reward_*", "aesthetics_*", "pickscore_*" column headers if activated
+                # "clip_simple", "clip_sft", "clip_promptist", "clip_bloom",
+                # "clip_dpo", "clip_dpo_10", "clip_dpo_20", "clip_dpo_30", "clip_dpo_50",
+                # "ir_simple", "ir_sft", "ir_promptist", "ir_bloom", ...
+                # "aesthetics_simple", ...
+                # "pick_simple", ...
             ])
 
             for idx, prompt in enumerate(prompts):
                 print(f"Processing prompt {idx+1}/{len(prompts)}")
                 metrics = self._process_single_prompt(idx, prompt)
-                row = metrics["hps"] + metrics["clip"]  # add other metric_data["..."] if active
-                writer.writerow(row)
+                writer.writerow(metrics)
 
-
-#main
+# main
 if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     evaluator = DiffusionEvaluator("diffusion.csv", "evaluation_results.csv", device)
